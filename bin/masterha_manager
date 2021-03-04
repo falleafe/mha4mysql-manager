@@ -124,7 +124,7 @@ sub parseconfig() {
 
 }
 
-send_report($$$) {
+sub send_report($$$) {
   my $report_script = shift;
   my $subject = shift;
   my $body = shift;
