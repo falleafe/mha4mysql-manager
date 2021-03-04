@@ -860,9 +860,35 @@ sub create_user($$$$$) {
   my $password = shift;
   my $host = shift;
   my $privs = shift;
-  $self->execute("create user $user\@\"$host\" identified with mysql_native_password by \"$password\"");
-  $self->execute("grant $prives ON *.* to $user\@\"$host\"");
-  return ;
+  eval {
+    $self->execute("create user $user\@\"$host\" identified with mysql_native_password by \"$password\"");
+    $self->execute("grant $privs ON *.* to $user\@\"$host\"");
+  };  
+  if ($@) {
+    my $mysql_err = $self->{dbh}->err;
+    if ( $mysql_err && $mysql_err == $MHA::ManagerConst::MYSQL_UNKNOWN_TID ) { 
+      $@ = undef;
+      return;
+    }   
+    croak $@; 
+  }   
+}
+
+sub drop_user($$$) {
+  my $self = shift;
+  my $user = shift;
+  my $host = shift;
+  eval {
+    $self->execute("drop user $user\@\"$host\"");
+  };  
+  if ($@) {
+    my $mysql_err = $self->{dbh}->err;
+    if ( $mysql_err && $mysql_err == $MHA::ManagerConst::MYSQL_UNKNOWN_TID ) { 
+      $@ = undef;
+      return;
+    }   
+    croak $@;                                                                                                                                                                                                                                             
+  }   
 }
 
 sub execute_ddl($$) {
