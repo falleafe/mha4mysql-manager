@@ -854,6 +854,17 @@ sub rename_user($$$) {
   return $self->execute($query);
 }
 
+sub create_user($$$$$) {
+  my $self  = shift;
+  my $user = shift;
+  my $password = shift;
+  my $host = shift;
+  my $privs = shift;
+  $self->execute("create user $user\@\"$host\" identified with mysql_native_password by \"$password\"");
+  $self->execute("grant $prives ON *.* to $user\@\"$host\"");
+  return ;
+}
+
 sub execute_ddl($$) {
   my ( $self, $query ) = @_;
   return $self->execute($query);
