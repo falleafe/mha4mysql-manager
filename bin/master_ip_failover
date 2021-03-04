@@ -1,0 +1,212 @@
+#!/usr/bin/env perl
+#  Since 2014.
+#  Author Jin-tae Hwang   <hjt1761@gmail.com>
+#
+#  This program is free software; you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation; either version 2 of the License, or
+#  (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#   along with this program; if not, write to the Free Software
+#  Foundation, Inc.,
+#  51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
+#
+
+use strict;
+use warnings FATAL => 'all';
+use Getopt::Long;
+use MHA::DBHelper;
+
+my $mysqluser = 'test';
+my $mysqlpassword = 'test';
+my $mysqlhosts = '%';
+my $mysqlprivs = 'SELECT';
+
+my (
+        $command,
+        $ssh_user,
+        $orig_master_host,
+        $orig_master_ip,
+        $orig_master_port,
+        $orig_master_ssh_port,
+        $new_master_host,
+        $new_master_ip,
+        $new_master_port,
+        $new_master_ssh_port,
+        $new_master_user,
+        $new_master_password,
+        $network_type,
+        $gateway,
+        $virtual_ip,
+        $key
+);
+
+GetOptions(
+        'command=s'             => \$command,
+        'ssh_user=s'            => \$ssh_user,
+        'orig_master_host=s'    => \$orig_master_host,
+        'orig_master_ip=s'      => \$orig_master_ip,
+        'orig_master_port=i'    => \$orig_master_port,
+        'orig_master_ssh_port=i'=> \$orig_master_ssh_port,
+        'new_master_host=s'     => \$new_master_host,
+        'new_master_ip=s'       => \$new_master_ip,
+        'new_master_port=i'     => \$new_master_port,
+        'new_master_ssh_port=i' => \$new_master_ssh_port,
+        'new_master_user=s'     => \$new_master_user,
+        'new_master_password=s' => \$new_master_password,
+        'network_type=s'        => \$network_type,
+        'gateway=s'             => \$gateway,
+        'virtual_ip=s'          => \$virtual_ip,
+        'key=i'                 => \$key
+);
+
+# Validation
+if (not defined($orig_master_ssh_port)) {
+    $orig_master_ssh_port=22;
+}
+if (not defined($new_master_ssh_port)) {
+    $new_master_ssh_port=22;
+}
+
+# Command for vip set
+my (
+    $ssh_status_vip_check,
+    $ssh_status_vip,
+    $ssh_start_vip,
+    $ssh_stop_vip,
+    $ssh_arping
+);
+if (defined($network_type) && defined($key) && defined($virtual_ip)) {
+    $ssh_status_vip_check = "/sbin/ifconfig |grep $network_type:$key -A1";
+    $ssh_status_vip = "/sbin/ifconfig";
+    $ssh_start_vip = "$ssh_status_vip $network_type:$key $virtual_ip up";
+    $ssh_stop_vip  = "$ssh_status_vip $network_type:$key down";
+    $ssh_arping    = "/sbin/arping -c1 -I$network_type -s$virtual_ip $gateway";
+}
+if (defined($ssh_user) && $ssh_user ne "root") {
+        $ssh_status_vip_check = "sudo ".$ssh_status_vip_check;
+        $ssh_status_vip = "sudo ".$ssh_status_vip;
+        $ssh_start_vip = "sudo ".$ssh_start_vip;
+        $ssh_stop_vip  = "sudo ".$ssh_stop_vip;
+        $ssh_arping    = "sudo ".$ssh_arping;
+}
+
+my $ssh;
+
+exit &main();
+
+sub main {
+    #if (defined($ssh_stop_vip) && defined($ssh_start_vip) && defined($ssh_arping)) {
+    #    print "\n\nIN SCRIPT TEST\n$ssh_stop_vip\n$ssh_start_vip\n\n";
+    #    print "\n\n$ssh_arping\n\n";
+    #}
+
+    if (defined($command) && ($command eq "stop" || $command eq "stopssh")) {
+        print "\n$ssh_stop_vip\n" ;
+        # $orig_master_host, $orig_master_ip, $orig_master_port are passed.
+        # If you manage master ip address at global catalog database,
+        # invalidate orig_master_ip here.
+        my $exit_code = 1;
+        eval {
+            if (defined($orig_master_host)) {
+                print "Disabling the VIP on old master: $orig_master_host \n";
+                &stop_vip();
+            } else {
+                &usage();
+            }
+            $exit_code = 0;
+        };
+        if ($@) {
+            warn "Got Error: $@\n";
+            exit $exit_code;
+        }
+        exit $exit_code;
+    }
+    elsif (defined($command) && $command eq "start") {
+        print "\n$ssh_start_vip\n" ;
+        # all arguments are passed.
+        # If you manage master ip address at global catalog database,
+        # activate new_master_ip here.
+        # You can also grant write access (create user, set read_only=0, etc) here.
+        my $exit_code = 1;
+        eval {
+            if (defined($virtual_ip) && defined($new_master_host)) {
+                print "Enabling the VIP - $virtual_ip on the new master - $new_master_host \n";
+                &start_vip();
+            } else {
+                &usage();
+            }
+
+            # 创建特定用户如test
+            my $new_master_handler = new MHA::DBHelper();
+            $new_master_handler->connect( $new_master_ip, $new_master_port,
+                $new_master_user, $new_master_password, 1 );
+            $new_master_handler->disable_log_bin_local();
+            print "Creating app user on the new master..\n";
+            $new_master_handler->create_user($mysqluser, $mysqlpassword, $mysqlhosts, $mysqlprivs);
+            $new_master_handler->enable_log_bin_local();
+            $new_master_handler->disconnect();
+
+            $exit_code = 0;
+        };
+        if ($@) {
+            warn $@;
+            exit $exit_code;
+        }
+        exit $exit_code;
+    }
+    elsif (defined($command) && $command eq "status") {
+        print "\n$ssh_status_vip_check\n" ;
+        print "Checking the Status of the script.. OK \n";
+        &vip_status();
+        exit 0;
+    }
+    else {
+        &usage();
+        exit 1;
+    }
+}
+
+# A simple system call that enable the VIP on the new master
+sub start_vip() {
+    if (defined($ssh_user)) {
+        $ssh=`ssh -p $new_master_ssh_port -T -oStrictHostKeyChecking=no $ssh_user\@$new_master_host \"$ssh_start_vip\"`;
+        print $ssh;
+        $ssh=`ssh -p $new_master_ssh_port -T -oStrictHostKeyChecking=no $ssh_user\@$new_master_host \"$ssh_arping\"`;
+        print $ssh;
+    } else {
+        &usage();
+    }
+}
+
+# A simple system call that disable the VIP on the old_master
+sub stop_vip() {
+    if (defined($ssh_user)) {
+        $ssh=`ssh -p $orig_master_ssh_port -T -oStrictHostKeyChecking=no $ssh_user\@$orig_master_host \"$ssh_stop_vip\"`;
+        print $ssh;
+    } else {
+        &usage();
+    }
+}
+
+# A simple system call that status check
+sub vip_status() {
+    if (defined($ssh_user)) {
+       `ssh -p $orig_master_ssh_port -T -oStrictHostKeyChecking=no $ssh_user\@$orig_master_host \" $ssh_start_vip\"`;
+       $ssh=`ssh -p $orig_master_ssh_port -T -oStrictHostKeyChecking=no $ssh_user\@$orig_master_host \" $ssh_status_vip_check \"`;
+       print $ssh;
+    } else {
+        &usage();
+    }
+}
+
+sub usage() {
+    print
+    "Usage: master_ip_failover --command=start|stop|stopssh|status --orig_master_host=host --orig_master_ip=ip --orig_master_port=port --new_master_host=host --new_master_ip=ip --new_master_port=port --gateway=gateway --virtual_ip=vip --key=key\n";
+}
