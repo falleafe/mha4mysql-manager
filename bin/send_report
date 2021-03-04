@@ -1,0 +1,85 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings FATAL => 'all';
+use Encode qw(encode_utf8);
+use JSON::MaybeXS qw(encode_json decode_json);
+use LWP::UserAgent;
+use HTTP::Request ();
+use HTTP::Response;
+use HTTP::Request::Common;
+use Getopt::Long;
+
+my $tokenurl    = 'https://qyapi.weixin.qq.com/cgi-bin/gettoken?';
+my $sendurl     = 'https://qyapi.weixin.qq.com/cgi-bin/message/send?';
+my $corpid      = '';
+my $corpsecret  = '';
+my $agentid     = ;
+
+my ( $dead_master_host, $new_master_host, $new_slave_hosts, $subject, $body, $target_user);
+GetOptions(
+  'orig_master_host=s' => \$dead_master_host,
+  'new_master_host=s'  => \$new_master_host,
+  'new_slave_hosts=s'  => \$new_slave_hosts,
+  'subject=s'          => \$subject,
+  'body=s'             => \$body,
+  'target_user=s'      => \$target_user,
+);
+
+sub get_response($) {
+  my $req = shift;
+
+  my $ua  = LWP::UserAgent->new(timeout=>10);
+  my $res = $ua->request($req);
+  if ( $res->is_success ) {
+    my $res_data = decode_json($res->content);
+    return (1, $res_data);
+  }
+  else {
+    return (0, $res->status_line);
+  }
+}
+
+sub get_token {
+  my $token_url = $tokenurl . 'corpid=' .$corpid . '&corpsecret=' . $corpsecret;
+  my $req = HTTP::Request->new('GET', $token_url);
+
+  my ($r, $res_data) = get_response($req);
+  if ( $r ) {
+    return ($r, $res_data->{access_token});
+  }
+  else {
+    return ($r, $res_data);
+  }
+
+}
+
+sub send_data($$$$) {
+  my ($token, $user, $subject, $content) = @_;
+  $content = "$subject\n$content";
+  my $send_url = $sendurl . 'access_token=' . $token;
+  my $send_data = {
+    'touser'  => $user,
+    'msgtype' => 'text',
+    'agentid' => $agentid,
+    'text'    => {'content' => $content},
+    'safe'    => '0'
+  };
+  my $json = encode_utf8(encode_json($send_data));
+  my $req = HTTP::Request->new('POST', $send_url);
+  $req->content($json);
+
+  my ($r, $res_data) = get_response($req);
+  if ( $r ) {
+    return ($r, $res_data->{errmsg});
+  }
+  else {
+    return ($r, $res_data);
+  }
+
+}
+
+my ($r, $send_token) = get_token();
+
+print send_data($send_token, $target_user, $subject, $body);
+
