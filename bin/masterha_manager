@@ -30,6 +30,22 @@ use MHA::ManagerConst;
 my $help;
 my $version;
 
+my $g_global_config_file = $MHA::ManagerConst::DEFAULT_GLOBAL_CONF;
+my $g_config_file;
+my $g_check_only;
+my $g_check_repl_health;
+my $g_seconds_behind_master = 30;
+my $g_monitor_only;
+my $g_workdir;
+my $g_interactive = 1;
+my $g_logfile;
+my $g_wait_on_monitor_error = 0;
+my $g_skip_ssh_check;
+my $g_ignore_fail_on_start = 0;
+my $g_pending_wait_file;
+my $g_report_script;
+my $log;
+
 $| = 1;
 
 GetOptions(
@@ -47,6 +63,7 @@ if ($help) {
 }
 
 my @ORIG_ARGV = @ARGV;
+my @ORIG_ARGV2 = @ARGV;
 my ( $exit_code, $dead_master, $ssh_reachable ) =
   MHA::MasterMonitor::main( "--interactive=0", @ARGV );
 
@@ -59,6 +76,78 @@ if ( !$dead_master->{hostname}
   || !defined($ssh_reachable) )
 {
   exit 1;
+}
+sub parseconfig() {
+  my @servers_config;
+  local @ARGV = @_;
+
+  GetOptions(
+    'global_conf=s'           => \$g_global_config_file,
+    'conf=s'                  => \$g_config_file,
+    'check_only'              => \$g_check_only,
+    'check_repl_health'       => \$g_check_repl_health,
+    'seconds_behind_master=i' => \$g_seconds_behind_master,
+    'monitor_only'            => \$g_monitor_only,
+    'interactive=i'           => \$g_interactive,
+    'wait_on_monitor_error=i' => \$g_wait_on_monitor_error,
+    'workdir=s'               => \$g_workdir,
+    'manager_workdir=s'       => \$g_workdir,
+    'log_output=s'            => \$g_logfile,
+    'manager_log=s'           => \$g_logfile,
+    'skip_ssh_check'          => \$g_skip_ssh_check,          # for testing
+    'skip_check_ssh'          => \$g_skip_ssh_check,
+    'ignore_fail_on_start'    => \$g_ignore_fail_on_start,
+  );
+
+  my ( $sc_ref, $binlog_server_ref ) = new MHA::Config(
+    logger     => $log,
+    globalfile => $g_global_config_file,
+    file       => $g_config_file
+  )->read_config();
+  @servers_config = @$sc_ref;
+
+  unless ($g_pending_wait_file) {
+    if ( $servers_config[0]->{pending_wait_file}) {
+      $g_pending_wait_file = $servers_config[0]->{pending_wait_file};
+    } 
+  }
+
+  if ( !$g_logfile && !$g_check_only && $servers_config[0]->{manager_log} ) {
+      $g_logfile = $servers_config[0]->{manager_log};
+  }
+
+  if (!$g_report_script &&  $servers_config[0]->{report_script} ) {
+    $g_report_script = $servers_config[0]->{report_script};
+  }
+
+  $log = MHA::ManagerUtil::init_log( $g_logfile, $servers_config[0]->{log_level} );
+
+}
+
+send_report($$$) {
+  my $report_script = shift;
+  my $subject = shift;
+  my $body = shift;
+  my $command = "$report_script --subject=\"$subject\" --body=\"$body\""
+  my ( $high, $low ) = MHA::ManagerUtil::exec_system( $command, $g_logfile );
+  if ( $high != 0 || $low != 0 ) {
+    $log->error("Failed to send report with return code $high:$low");
+  }
+}
+
+@ARGV      = @ORIG_ARGV2;
+parseconfig(@ARGV);
+
+while (1) {
+  if (-e $g_pending_wait_file) {
+    print "Waiting for pending wait file..";
+    $log->info("Waiting for pending wait file..\n");
+    send_report($g_report_script, "...wait..failover...", "Waiting for pending wait file..")
+    sleep 5;
+    next;
+  } else {
+    last;
+  }
 }
 
 @ARGV      = @ORIG_ARGV;
